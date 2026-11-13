@@ -29,6 +29,8 @@ type desktopTarget struct {
 	agent              map[string]any
 
 	Kind            string         `json:"kind"`
+	DeviceID        string         `json:"device_id,omitempty"`
+	CanConnect      bool           `json:"can_connect"`
 	CurrentDevice   bool           `json:"current_device,omitempty"`
 	ID              string         `json:"id"`
 	Name            string         `json:"name"`
@@ -75,7 +77,11 @@ func (s *server) targets(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	targets := s.hosts.list(owner(r), currentDeviceID(r))
 	warnings := make([]string, 0)
-	for _, source := range s.sources {
+	sources := s.sources
+	if r.URL.Query().Get("kind") == "device" {
+		sources = nil
+	}
+	for _, source := range sources {
 		items, err := source.targets(ctx, r.Header)
 		if err != nil {
 			warnings = append(warnings, source.Name)
@@ -88,6 +94,13 @@ func (s *server) targets(w http.ResponseWriter, r *http.Request) {
 	}
 	for index := range targets {
 		s.runtimes.decorate(&targets[index])
+		target := &targets[index]
+		stage, _ := target.Deployment["stage"].(string)
+		switching := stage != "" && stage != "idle" && stage != "completed" && stage != "failed"
+		requesting, _ := target.Permissions["requesting"].(bool)
+		target.CanConnect = target.Online && target.Enabled && target.Ready &&
+			!target.CurrentDevice && !switching && !requesting &&
+			(target.Kind != "device" || target.Installed)
 	}
 	sort.Slice(targets, func(i, j int) bool { return targets[i].Name < targets[j].Name })
 	writeJSON(w, http.StatusOK, map[string]any{"targets": targets, "unavailable": warnings})

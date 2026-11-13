@@ -83,6 +83,7 @@ func (h *hostRegistry) list(owner, currentDevice string) []desktopTarget {
 			state = "offline"
 		}
 		target := desktopTarget{agent: r.Agent, Kind: "device", ID: id, Name: r.Name, Platform: r.Platform, URL: "/desktop/" + id + "/", RequiresConsent: r.Desktop.RequiresConsent,
+			DeviceID:      r.DeviceID,
 			CurrentDevice: currentDevice != "" && r.DeviceID == currentDevice,
 			Managed:       r.ControlService != "", Online: online, Enabled: r.Desktop.Enabled, Ready: online && r.Desktop.Ready, Status: state, Permissions: permissions}
 		if stamp := previewStamp(id); stamp != "" {
