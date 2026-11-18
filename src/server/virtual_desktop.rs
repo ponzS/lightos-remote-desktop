@@ -3,6 +3,7 @@ use super::*;
 
 #[derive(Clone)]
 pub(super) struct RetainedDesktop {
+    mode: DesktopMode,
     backend: Arc<dyn DesktopBackend>,
     displays: Arc<dyn DisplayController>,
     session: Arc<Mutex<Box<dyn SessionLifecycle>>>,
@@ -12,8 +13,9 @@ pub(super) struct RetainedDesktop {
 }
 
 impl RetainedDesktop {
-    fn new(host: HostSession) -> Self {
+    fn new(host: HostSession, mode: DesktopMode) -> Self {
         Self {
+            mode,
             backend: host.backend,
             displays: host.displays,
             session: Arc::new(Mutex::new(host.lifecycle)),
@@ -33,7 +35,7 @@ impl RetainedDesktop {
         state.session = self.session;
         state.output = self.output;
         state.outputs = self.outputs;
-        state.desktop = DesktopMode::Virtual;
+        state.desktop = self.mode;
         state.transient_backend = false;
     }
 
@@ -59,6 +61,7 @@ impl VirtualDesktop {
             .retained
             .lock()
             .unwrap_or_else(|error| error.into_inner()) = Some(RetainedDesktop {
+            mode: state.desktop,
             backend: state.backend.clone(),
             displays: state.displays.clone(),
             session: state.session.clone(),
@@ -72,6 +75,7 @@ impl VirtualDesktop {
         &self,
         host: &dyn HostPlatform,
         config: &Config,
+        mode: DesktopMode,
         cancelled: Arc<AtomicBool>,
     ) -> anyhow::Result<RetainedDesktop> {
         use anyhow::ensure;
@@ -84,6 +88,10 @@ impl VirtualDesktop {
             "virtual desktop startup cancelled or service stopping"
         );
         if let Some(context) = retained.as_ref() {
+            ensure!(
+                context.mode == mode,
+                "selected virtual target is unavailable"
+            );
             ensure!(
                 context.healthy(),
                 "虚拟桌面已停止，请关闭并重新开启远程桌面；不会静默创建空白桌面"
@@ -104,7 +112,12 @@ impl VirtualDesktop {
             !self.stopped.load(Ordering::Acquire),
             "desktop service is stopping"
         );
-        let context = RetainedDesktop::new(host.open_virtual(config, cancelled.clone())?);
+        let session = match mode {
+            DesktopMode::Virtual => host.open_virtual(config, cancelled.clone())?,
+            DesktopMode::VirtualDisplay => host.open_virtual_display(config, cancelled.clone())?,
+            DesktopMode::Physical => anyhow::bail!("physical sessions cannot be retained here"),
+        };
+        let context = RetainedDesktop::new(session, mode);
         if cancelled.load(Ordering::Acquire) || self.stopped.load(Ordering::Acquire) {
             context.backend.stop();
             anyhow::bail!("virtual desktop startup cancelled");

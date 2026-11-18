@@ -69,6 +69,18 @@ impl HostPlatform for NativeHost {
     fn supports_virtual(&self, _: &Config) -> bool {
         false
     }
+    #[cfg(target_os = "macos")]
+    fn virtual_display_availability(&self) -> Option<Result<()>> {
+        self.platform.virtual_display_availability()
+    }
+    #[cfg(target_os = "macos")]
+    fn open_virtual_display(
+        &self,
+        config: &Config,
+        cancelled: Arc<AtomicBool>,
+    ) -> Result<HostSession> {
+        self.platform.open_virtual_display(config, cancelled)
+    }
     fn probe_physical(
         &self,
         config: &Config,
@@ -187,14 +199,19 @@ impl Shared {
 const WORKER_STOP_TIMEOUT: Duration = Duration::from_secs(2);
 const STATIC_RECAPTURE_INTERVAL: Duration = Duration::from_secs(2);
 
+#[cfg(target_os = "macos")]
+type DisplayChange = Box<dyn FnOnce() + Send>;
+
 pub struct NativeBackend {
     platform: Arc<dyn NativePlatform>,
     shared: Arc<Shared>,
     input: mpsc::Sender<InputCommand>,
     workers: Mutex<Vec<JoinHandle<()>>>,
+    #[cfg(target_os = "macos")]
+    display_changes: std::sync::mpsc::SyncSender<DisplayChange>,
 }
 impl NativeBackend {
-    fn start(
+    pub(super) fn start(
         platform: Arc<dyn NativePlatform>,
         key: String,
         output: DisplayOutput,
@@ -214,11 +231,15 @@ impl NativeBackend {
         });
         let (input, receive) = mpsc::channel(64);
         let (ready, started) = std::sync::mpsc::sync_channel(2);
+        #[cfg(target_os = "macos")]
+        let (display_changes, pending_changes) = std::sync::mpsc::sync_channel(1);
         let backend = Self {
             platform: platform.clone(),
             shared: shared.clone(),
             input,
             workers: Mutex::new(Vec::new()),
+            #[cfg(target_os = "macos")]
+            display_changes,
         };
         let capture_platform = platform.clone();
         if platform.supports_cursor() {
@@ -276,6 +297,8 @@ impl NativeBackend {
                     &capture_state,
                     &capture_cancelled,
                     capture_ready.clone(),
+                    #[cfg(target_os = "macos")]
+                    pending_changes,
                 );
                 if let Err(error) = result {
                     let _ = capture_ready.try_send(Err(anyhow::anyhow!("{error:#}")));
@@ -310,6 +333,26 @@ impl NativeBackend {
         }
         Ok(backend)
     }
+
+    #[cfg(target_os = "macos")]
+    pub(super) async fn reconfigure_display(
+        &self,
+        apply: impl FnOnce() -> Result<()> + Send + 'static,
+    ) -> Result<()> {
+        let (reply, completion) = tokio::sync::oneshot::channel();
+        self.display_changes
+            .try_send(Box::new(move || {
+                if !reply.is_closed() {
+                    let _ = reply.send(apply());
+                }
+            }))
+            .map_err(|_| anyhow::anyhow!("native display change unavailable"))?;
+        tokio::time::timeout(Duration::from_secs(6), completion)
+            .await
+            .context("native display change timed out")?
+            .context("native capture stopped during display change")?
+    }
+
     fn clipboard_ready(&self) -> Result<()> {
         ensure!(
             !self.is_stopped() && !self.paused() && self.platform.session_active()?,
@@ -504,7 +547,7 @@ pub(super) fn probe_input() -> Result<()> {
     Ok(())
 }
 
-fn join_until(worker: JoinHandle<()>, deadline: Instant) {
+pub(super) fn join_until(worker: JoinHandle<()>, deadline: Instant) {
     while !worker.is_finished() && Instant::now() < deadline {
         std::thread::park_timeout(Duration::from_millis(5));
     }
@@ -531,6 +574,7 @@ fn run_capture(
     shared: &Shared,
     cancelled: &AtomicBool,
     ready: std::sync::mpsc::SyncSender<Result<()>>,
+    #[cfg(target_os = "macos")] pending_changes: std::sync::mpsc::Receiver<DisplayChange>,
 ) -> Result<()> {
     let mut capture: Option<Box<dyn NativeCapture>> = None;
     let mut ready = Some(ready);
@@ -544,7 +588,18 @@ fn run_capture(
             std::thread::park_timeout(Duration::from_millis(25));
             continue;
         }
-        if checked_display.elapsed() >= Duration::from_millis(500) {
+        let refresh = checked_display.elapsed() >= Duration::from_millis(500);
+        #[cfg(target_os = "macos")]
+        let refresh = if let Ok(change) = pending_changes.try_recv() {
+            // Retire the old ScreenCaptureKit stream before changing the mode.
+            shared.pause();
+            capture.take();
+            change();
+            true
+        } else {
+            refresh
+        };
+        if refresh {
             let old = shared
                 .output
                 .lock()
@@ -639,7 +694,7 @@ fn run_input(
             }
             let active = permitted && !shared.paused.load(Ordering::Acquire);
             if !active || !was_active {
-                held.release(&mut enigo)?;
+                held.release(platform, &mut enigo)?;
                 // Do not replay input queued while locked or before first capture.
                 while let Ok(command) = input.try_recv() {
                     discard_input(command);
@@ -659,12 +714,12 @@ fn run_input(
                 Err(mpsc::error::TryRecvError::Disconnected) => break,
             };
             if let InputCommand::ReleaseSync { done } = command {
-                held.release(&mut enigo)?;
+                held.release(platform, &mut enigo)?;
                 let _ = done.send(());
                 continue;
             }
             if matches!(command, InputCommand::Release) {
-                held.release(&mut enigo)?;
+                held.release(platform, &mut enigo)?;
                 continue;
             }
             let Some((command, guard)) = command.into_active() else {
@@ -696,12 +751,12 @@ fn run_input(
             result?;
             if !still_active {
                 shared.pause();
-                held.release(&mut enigo)?;
+                held.release(platform, &mut enigo)?;
             }
         }
         Ok(())
     })();
-    let release = held.release(&mut enigo);
+    let release = held.release(platform, &mut enigo);
     while let Ok(command) = input.try_recv() {
         discard_input(command);
     }
@@ -751,7 +806,7 @@ fn button(code: u32) -> Result<Button> {
     }
 }
 impl Held {
-    fn release(&mut self, enigo: &mut Enigo) -> Result<()> {
+    fn release(&mut self, platform: &dyn NativePlatform, enigo: &mut Enigo) -> Result<()> {
         self.scroll_x = 0.0;
         self.scroll_y = 0.0;
         let mut result = Ok(());
@@ -761,8 +816,8 @@ impl Held {
             }
         }
         for code in std::mem::take(&mut self.buttons) {
-            if let Err(error) = enigo.button(button(code)?, Direction::Release) {
-                result = Err(error.into());
+            if let Err(error) = platform.pointer_button(enigo, button(code)?, Direction::Release) {
+                result = Err(error);
             }
         }
         result
@@ -788,7 +843,7 @@ impl Held {
                     + (x * (f64::from(output.width) / scale - 1.0).max(0.0)).round() as i32;
                 let y = output.y
                     + (y * (f64::from(output.height) / scale - 1.0).max(0.0)).round() as i32;
-                platform.move_pointer(enigo, x, y)?;
+                platform.move_pointer(enigo, output, x, y)?;
             }
             InputCommand::Key { code, pressed } => {
                 let raw = keycode(*code)?;
@@ -810,7 +865,8 @@ impl Held {
                 button: code,
                 pressed,
             } => {
-                enigo.button(
+                platform.pointer_button(
+                    enigo,
                     button(*code)?,
                     if *pressed {
                         Direction::Press
@@ -877,7 +933,9 @@ impl Held {
                     enigo.key(key, Direction::Click)?;
                 }
             }
-            InputCommand::Release | InputCommand::ReleaseSync { .. } => self.release(enigo)?,
+            InputCommand::Release | InputCommand::ReleaseSync { .. } => {
+                self.release(platform, enigo)?
+            }
             InputCommand::Guarded { .. } => bail!("nested input authorization"),
         }
         Ok(())
@@ -1032,6 +1090,8 @@ mod tests {
             shared: shared.clone(),
             input,
             workers: Mutex::new(Vec::new()),
+            #[cfg(target_os = "macos")]
+            display_changes: std::sync::mpsc::sync_channel(1).0,
         };
         assert!(!backend.frame_is_fresh(Duration::from_secs(3)));
         assert!(shared.publish(Frame::new(2, 2, vec![0; 16].into()), 0));

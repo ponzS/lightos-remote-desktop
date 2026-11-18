@@ -2668,7 +2668,7 @@ dependencies = [
 
 [[package]]
 name = "lightos-remote-desktop"
-version = "0.1.48"
+version = "0.1.58"
 dependencies = [
  "anyhow",
  "arboard",
@@ -2680,6 +2680,7 @@ dependencies = [
  "clap",
  "configparser",
  "core-foundation-sys",
+ "core-graphics",
  "desktop-config",
  "dirs",
  "display-control",

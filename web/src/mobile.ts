@@ -37,8 +37,8 @@ export const MOBILE_ROWS: readonly (readonly MobileShortcut[])[] = [
 
 // More capture pixels must be paired with compositor scale: increasing only
 // the resolution makes desktop text smaller instead of making it sharper.
-export function mobileResolution(cssWidth: number, cssHeight: number, pixelRatio: number) {
-  return captureResolution(cssWidth, cssHeight, pixelRatio, LEGACY_SCALES);
+export function mobileResolution(cssWidth: number, cssHeight: number, pixelRatio: number, supported: readonly number[] = LEGACY_SCALES) {
+  return captureResolution(cssWidth, cssHeight, pixelRatio, LEGACY_SCALES.filter(scale => supported.includes(scale)));
 }
 
 interface MobileOptions {

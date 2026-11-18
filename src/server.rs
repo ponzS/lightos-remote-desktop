@@ -55,6 +55,7 @@ static NEXT_CONNECTION: AtomicU64 = AtomicU64::new(1);
 enum DesktopMode {
     Virtual,
     Physical,
+    VirtualDisplay,
 }
 
 #[derive(Default, Deserialize)]
@@ -268,14 +269,20 @@ impl AppState {
         // A transient physical connection still belongs to the same service.
         // Its base configuration determines whether the retained virtual
         // desktop can be selected again.
-        let virtual_available = self.host.supports_virtual(&self.config);
-        let virtual_reason = if virtual_available {
-            String::new()
+        let virtual_choice = if let Some(availability) = self.host.virtual_display_availability() {
+            json!({"mode":DesktopMode::VirtualDisplay,"label":"虚拟显示器",
+                "available":availability.is_ok(),"reason":availability.err().map(|e| e.to_string()).unwrap_or_default()})
         } else {
-            self.host.virtual_unavailable_reason(&self.config)
+            let available = self.host.supports_virtual(&self.config);
+            let reason = if available {
+                String::new()
+            } else {
+                self.host.virtual_unavailable_reason(&self.config)
+            };
+            json!({"mode":DesktopMode::Virtual,"label":"虚拟桌面","available":available,"reason":reason})
         };
         json!([
-            {"mode":"virtual","label":"虚拟桌面","available":virtual_available,"reason":virtual_reason},
+            virtual_choice,
             {"mode":"physical","label":"物理桌面","available":reason.is_none(),"reason":reason,"capabilities":physical.ok()}
         ])
     }
@@ -297,10 +304,15 @@ impl AppState {
         {
             return Ok(self);
         }
-        if mode == DesktopMode::Virtual {
+        if matches!(mode, DesktopMode::Virtual | DesktopMode::VirtualDisplay) {
             let _ = authorization.send(false);
+            if mode == DesktopMode::VirtualDisplay {
+                self.host
+                    .virtual_display_availability()
+                    .context("虚拟显示器不可用")??;
+            }
             self.virtual_desktop
-                .acquire(self.host.as_ref(), &self.config, cancelled)?
+                .acquire(self.host.as_ref(), &self.config, mode, cancelled)?
                 .apply(&mut self);
             return Ok(self);
         }
@@ -1008,7 +1020,7 @@ async fn stream_connection(
     .await
     .ok()?;
     let ready = Message::Text(
-        json!({"type":"ready","key_chords":true,"text_clipboard":true,"clipboard_text_input":state.backend.clipboard_text_input(),"image_clipboard":state.backend.supports_image_clipboard(),"clipboard_sync":state.backend.supports_clipboard_sync(),"clipboard_session":Some(cursor_scope.token()),"backend_selection":true,"video_request_ids":true,"video_scaling":true,"control_release":true,"resize_scale":display_capabilities.resize_scale,"resize_scales":if display_capabilities.resize_scale { DisplayMode::SUPPORTED_SCALES.as_slice() } else { &[] },"cursor_session":if state.backend.kind() == BackendKind::Wayland || state.backend.cursor_frames().is_some() { Some(cursor_scope.token()) } else { None },"version":env!("CARGO_PKG_VERSION"),"width":width,"height":height,"cursor":if state.backend.cursor_embedded() { "embedded" } else { "default" },"audio":audio_available,"audio_session":audio_session,"audio_codecs":["opus","pcm"],"frame_ack":true,"frame_ids":true,"video_flow_window":12,"metrics":true,"video_codecs":video_codecs,"codec_capabilities":codec_capabilities,"desktop":state.desktop,"desktop_backend":state.backend.kind(),"desktops":desktop_options,"resize":display_capabilities.resize,"resize_reason":display_capabilities.reason,"outputs":state.outputs,"output":state.output})
+        json!({"type":"ready","key_chords":true,"text_clipboard":true,"clipboard_text_input":state.backend.clipboard_text_input(),"image_clipboard":state.backend.supports_image_clipboard(),"clipboard_sync":state.backend.supports_clipboard_sync(),"clipboard_session":Some(cursor_scope.token()),"backend_selection":true,"video_request_ids":true,"video_scaling":true,"control_release":true,"resize_scale":display_capabilities.resize_scale,"resize_scales":if display_capabilities.resize_scale { state.displays.resize_scales() } else { &[] },"cursor_session":if state.backend.kind() == BackendKind::Wayland || state.backend.cursor_frames().is_some() { Some(cursor_scope.token()) } else { None },"version":env!("CARGO_PKG_VERSION"),"width":width,"height":height,"cursor":if state.backend.cursor_embedded() { "embedded" } else { "default" },"audio":audio_available,"audio_session":audio_session,"audio_codecs":["opus","pcm"],"frame_ack":true,"frame_ids":true,"video_flow_window":12,"metrics":true,"video_codecs":video_codecs,"codec_capabilities":codec_capabilities,"desktop":state.desktop,"desktop_backend":state.backend.kind(),"desktops":desktop_options,"resize":display_capabilities.resize,"resize_reason":display_capabilities.reason,"outputs":state.outputs,"output":state.output})
 
             .to_string()
             .into(),

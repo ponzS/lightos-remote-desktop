@@ -187,8 +187,9 @@ function Workspace() {
   const showSettings = (tab = settingsTab) => { setMenu(""); setSettingsTab(tab); setSettingsOpen(true); };
   const showUtility = (mode: "clipboard" | "keyboard") => { setMenu(""); setUtility(mode); };
   const noResize = !controls.ready || !controls.resizeAvailable;
-  const canUseVirtual = !ownership && controls.desktopMode !== "virtual"
-    && controls.choices.some((choice) => choice.mode === "virtual" && choice.available);
+  const virtualChoice = !ownership && controls.choices.find((choice) =>
+    choice.mode !== "physical" && choice.mode !== controls.desktopMode && choice.available);
+  const isVirtualDisplay = virtualChoice && virtualChoice.mode === "virtual_display";
   const entry = new URL(window.location.href);
   const managerEntry = /^\/desktop\/[a-f0-9]{32}\//.test(entry.pathname);
   const viaLightOS = managerEntry && entry.searchParams.get("from") === "lightos";
@@ -218,11 +219,11 @@ function Workspace() {
         <strong>{t(ownership === "replaced" ? "desktopReplaced" : ownership ? "desktopOccupied" : "desktopNotConnected")}</strong>
         <p className="desktop-recovery-message">{ownership ? t(ownership === "unavailable" ? "desktopControllerHint" : "desktopOccupiedHint") : status.message || t("desktopRecoveryHint")}</p>
       </div>
-      {canUseVirtual && <p className="desktop-recovery-hint">{t("virtualDesktopHint")}</p>}
+      {virtualChoice && <p className="desktop-recovery-hint">{t(isVirtualDisplay ? "virtualDisplayHint" : "virtualDesktopHint")}</p>}
       <div className="desktop-recovery-actions">
         {ownership && ownership !== "unavailable" && <Button className="recovery-primary" onClick={() => setTakeoverOpen(true)}>{t("takeoverDesktop")}</Button>}
-        {(!ownership || ownership === "unavailable") && <Button className={canUseVirtual ? undefined : "recovery-primary"} onClick={() => invoke("connection")}>{t("reconnectDesktop")}</Button>}
-        {canUseVirtual && <Button className="recovery-primary" disabled={controls.switchingDesktop} onClick={() => choose("desktop-source", "virtual")}>{t("useVirtualDesktop")}</Button>}
+        {(!ownership || ownership === "unavailable") && <Button className={virtualChoice ? undefined : "recovery-primary"} onClick={() => invoke("connection")}>{t("reconnectDesktop")}</Button>}
+        {virtualChoice && <Button className="recovery-primary" disabled={controls.switchingDesktop} onClick={() => choose("desktop-source", virtualChoice.mode)}>{t(isVirtualDisplay ? "useVirtualDisplay" : "useVirtualDesktop")}</Button>}
       </div>
     </div>
     <div id="desktop-authorization" className="desktop-recovery desktop-authorization" role="status" aria-live="polite" hidden={!controls.authorizationPending || controls.ready || !controls.wanted}>

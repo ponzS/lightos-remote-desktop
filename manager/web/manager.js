@@ -1,6 +1,9 @@
 (() => {
   "use strict";
   const zh = navigator.language.toLowerCase().startsWith("zh");
+  const platform = navigator.userAgentData?.platform || navigator.platform || "";
+  const mobile = /\b(Android|iPhone|iPad|iPod)\b/i.test(platform + " " + navigator.userAgent)
+    || (/\bMac/i.test(platform) && navigator.maxTouchPoints > 1);
   const copy = zh ? {
     title: "懒猫远程", subtitle: "懒猫微服网络保障您的隐私和数据安全。", devices: "在线设备", empty: "暂无在线设备",
     help: "在电脑上登录懒猫微服客户端，即可在这里管理。", loading: "正在获取设备…", connect: "连接桌面", consent: "需本机授权",
@@ -157,7 +160,11 @@
     image.addEventListener("error", () => { image.hidden = true; placeholder.hidden = false; });
 
     const connect = element("a", "preview-link"), connectLabel = element("span", "preview-action", copy.enterDesktop);
-    connect.target = "_blank"; connect.rel = "noopener noreferrer"; connect.append(connectLabel);
+    if (!mobile) {
+      connect.target = "_blank";
+      connect.rel = "noopener noreferrer";
+    }
+    connect.append(connectLabel);
     connect.addEventListener("click", event => { if (connect.getAttribute("aria-disabled") === "true") event.preventDefault(); });
     const notices = element("div", "preview-notices"), badge = element("span", "badge"), error = element("p", "device-error");
     error.id = `device-error-${item.id}`; error.hidden = true; error.tabIndex = 0; error.setAttribute("role", "status");

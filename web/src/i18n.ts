@@ -5,6 +5,8 @@ import { languageKey, languages, readPreference, resolveLanguage } from "./prefe
 const en = {
   useVirtualDesktop: "Use virtual desktop",
   virtualDesktopHint: "Open a separate desktop. Its apps stay open when you reconnect.",
+  useVirtualDisplay: "Use virtual display",
+  virtualDisplayHint: "Open an extra display in the current Mac session.",
   authorizationWaiting: "Waiting for permission on the controlled computer",
   authorizationWaitingHint: "On that computer, allow screen and input access in the system dialog. The desktop will appear here after approval.",
   fullKeyboardMode: "Full keyboard mode",
@@ -64,6 +66,8 @@ const en = {
 const zh: Record<keyof typeof en, string> = {
   useVirtualDesktop: "使用虚拟桌面",
   virtualDesktopHint: "打开独立桌面，断线重连后可继续使用原来的应用。",
+  useVirtualDisplay: "使用虚拟显示器",
+  virtualDisplayHint: "为当前 Mac 登录会话打开一块扩展显示器。",
   authorizationWaiting: "等待被控电脑确认权限",
   authorizationWaitingHint: "请在被控电脑的系统弹窗中允许屏幕与输入访问。确认后，这里会自动显示桌面画面。",
   fullKeyboardMode: "全键盘模式",
@@ -131,7 +135,7 @@ const clientPairs: [string, string][] = [
   ["Connecting", "正在连接"], ["Waiting for desktop", "等待桌面就绪"], ["Disconnected", "已断开"], ["Connected", "已连接"],
   ["Waiting for video", "等待画面"], ["Release keyboard capture", "释放键盘捕获"], ["Capture keyboard in fullscreen", "全屏捕获键盘"],
   ["Fit window", "适应窗口"], ["Actual size · 1:1 pixels", "原始大小 · 按设定分辨率 1:1 显示"], ["Fullscreen · Ctrl+Alt+Shift+Esc releases capture", "全屏 · Ctrl+Alt+Shift+Esc 释放键盘"],
-  ["Virtual desktop", "虚拟桌面"], ["Physical desktop", "物理桌面"], ["Desktop unavailable", "桌面不可用"],
+  ["Virtual desktop", "虚拟桌面"], ["Physical desktop", "物理桌面"], ["Virtual display", "虚拟显示器"], ["Desktop unavailable", "桌面不可用"],
   ["No keyboard capture. Try fullscreen capture or send a shortcut below for keys intercepted by your system.", "未捕获键盘。全屏可尝试捕获；系统拦截的按键可通过通用组合键发送器发送。"],
   ["Keyboard capture is unsupported. Use the shortcut sender below for system-intercepted keys.", "浏览器不支持键盘捕获。系统截走的组合键可用下方通用发送器发送。"],
   ["All available keys requested. System-reserved keys may still be intercepted. Ctrl+Alt+Shift+Esc releases capture and opens tools.", "已请求捕获所有可用按键。部分系统快捷键仍可能被本机拦截。Ctrl+Alt+Shift+Esc 释放捕获并打开工具栏。"],
@@ -187,7 +191,7 @@ export function translateClient(text: string): string {
   return text.replaceAll("未发现当前用户的物理 Wayland 会话；请先登录本机桌面", "No physical Wayland session found for this user; sign in on the host desktop first")
     .replaceAll("发现多个 Wayland 会话；请用 --physical-wayland-socket 指定物理桌面", "Multiple Wayland sessions found; configure --physical-wayland-socket")
     .replaceAll("服务以外部桌面模式启动", "Service started in external desktop mode")
-    .replaceAll("虚拟桌面", "Virtual desktop").replaceAll("物理桌面", "Physical desktop")
+    .replaceAll("虚拟桌面", "Virtual desktop").replaceAll("物理桌面", "Physical desktop").replaceAll("虚拟显示器", "Virtual display")
     .replaceAll("已连接", "Connected to ").replaceAll("正在连接", "Connecting to ").replaceAll("已选择", "Selected ")
     .replaceAll("尚未确认", "not yet confirmed").replaceAll("尚未连接", "not connected")
     .replaceAll("连接超时，可切回虚拟桌面", " connection timed out; switch back to Virtual desktop")

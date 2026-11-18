@@ -1,8 +1,12 @@
 //! Capture the logged-in, unlocked macOS console desktop.
 #[path = "macos_cursor.rs"]
 mod macos_cursor;
+#[path = "macos_pointer.rs"]
+mod macos_pointer;
 #[path = "macos_service.rs"]
 mod macos_service;
+#[path = "macos_virtual_display.rs"]
+mod virtual_display;
 pub use macos_service::install_service;
 
 use std::{
@@ -21,17 +25,23 @@ use display_control::DisplayOutput;
 use futures_util::future::BoxFuture;
 use screencapturekit::{cm::SCFrameStatus, prelude::*};
 
-use super::{NativeCapture, NativePlatform, PermissionProvider, PermissionState, Permissions};
+use super::{
+    HostSession, NativeCapture, NativePlatform, PermissionProvider, PermissionState, Permissions,
+};
+use crate::config::Config;
 use crate::{
     audio::{AudioCapture, AudioCaptureFactory, AudioFormat, AudioStream, PcmWriter},
     backend::{BackendKind, Frame},
 };
 
 pub fn provider() -> Arc<dyn NativePlatform> {
-    Arc::new(MacosPlatform)
+    Arc::new(MacosPlatform::default())
 }
 
-struct MacosPlatform;
+#[derive(Default)]
+struct MacosPlatform {
+    pointer: Option<Mutex<macos_pointer::VirtualPointer>>,
+}
 
 /// Explicit consent entry point for desktop integrations. Capability probes and
 /// the doctor command continue to call the read-only PermissionProvider method.
@@ -43,7 +53,7 @@ pub fn permissions(request: bool) -> Result<Permissions> {
         },
         number::kCFBooleanTrue,
     };
-    let platform = MacosPlatform;
+    let platform = MacosPlatform::default();
     let before = platform.permissions()?;
     if request {
         ensure!(
@@ -110,6 +120,53 @@ impl PermissionProvider for MacosPlatform {
 }
 
 impl NativePlatform for MacosPlatform {
+    fn move_pointer(
+        &self,
+        enigo: &mut enigo::Enigo,
+        output: &DisplayOutput,
+        x: i32,
+        y: i32,
+    ) -> Result<()> {
+        if let Some(pointer) = &self.pointer {
+            return pointer
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .move_to(output, x - output.x, y - output.y);
+        }
+        use enigo::Mouse as _;
+        enigo.move_mouse(x, y, enigo::Coordinate::Abs)?;
+        Ok(())
+    }
+
+    fn pointer_button(
+        &self,
+        enigo: &mut enigo::Enigo,
+        button: enigo::Button,
+        direction: enigo::Direction,
+    ) -> Result<()> {
+        if let Some(pointer) = &self.pointer {
+            return pointer
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .button(button, direction);
+        }
+        use enigo::Mouse as _;
+        enigo.button(button, direction)?;
+        Ok(())
+    }
+
+    fn virtual_display_availability(&self) -> Option<Result<()>> {
+        Some(virtual_display::check_available(self))
+    }
+
+    fn open_virtual_display(
+        &self,
+        config: &Config,
+        cancelled: Arc<AtomicBool>,
+    ) -> Result<HostSession> {
+        virtual_display::open(config, cancelled)
+    }
+
     fn supports_cursor(&self) -> bool {
         true
     }
@@ -144,7 +201,12 @@ impl NativePlatform for MacosPlatform {
         );
         self.permissions()?.require_granted()?;
         let content = SCShareableContent::get().context("query ScreenCaptureKit displays")?;
-        content.displays().iter().map(display_output).collect()
+        content
+            .displays()
+            .iter()
+            .filter(|display| !virtual_display::owns(display.display_id()))
+            .map(display_output)
+            .collect()
     }
 
     fn refresh_display(&self, previous: &DisplayOutput) -> Result<DisplayOutput> {
@@ -173,7 +235,17 @@ impl NativePlatform for MacosPlatform {
         self.permissions()?.require_granted()?;
         let session_id = session.id;
         let display = selected_display(output)?;
-        let current = display_output(&display)?;
+        let display_id = display.display_id();
+        let virtual_display = virtual_display::owns(display_id);
+        ensure!(
+            !virtual_display || virtual_display::is_extended(display_id),
+            "macOS virtual display must be an extended display"
+        );
+        let current = if virtual_display {
+            display_geometry(display_id, unsafe { CGDisplayBounds(display_id) })?
+        } else {
+            display_output(&display)?
+        };
         ensure!(
             current.width == output.width && current.height == output.height,
             "selected display resolution changed"
@@ -200,7 +272,9 @@ impl NativePlatform for MacosPlatform {
                 if kind != SCStreamOutputType::Screen {
                     return;
                 }
-                if !capture_allowed(session_id).unwrap_or(false) {
+                if !capture_allowed(session_id).unwrap_or(false)
+                    || (virtual_display && !virtual_display::is_extended(display_id))
+                {
                     output_events.clear_frame();
                     return;
                 }
@@ -242,34 +316,18 @@ fn display_output(display: &SCDisplay) -> Result<DisplayOutput> {
     display_geometry(display.display_id(), display.frame())
 }
 
-fn display_geometry(id: u32, frame: CGRect) -> Result<DisplayOutput> {
-    // ScreenCaptureKit's display dimensions follow the mode's logical size.
-    // Configure capture in backing pixels so Retina content is not first
-    // downsampled to 1x and then enlarged by the viewing browser.
-    let mode = unsafe { CGDisplayCopyDisplayMode(id) };
-    ensure!(!mode.is_null(), "query macOS display backing scale");
-    let (logical_width, logical_height, pixel_width, pixel_height) = unsafe {
-        let dimensions = (
-            CGDisplayModeGetWidth(mode),
-            CGDisplayModeGetHeight(mode),
-            CGDisplayModeGetPixelWidth(mode),
-            CGDisplayModeGetPixelHeight(mode),
-        );
-        CGDisplayModeRelease(mode);
-        dimensions
+fn display_geometry(id: u32, mut frame: CGRect) -> Result<DisplayOutput> {
+    // CGVirtualDisplay applies the mode on its owning thread. CGDisplay mode
+    // and bounds queries can keep reporting the previous mode after a change.
+    let backing_scale = if let Some(mode) = virtual_display::mode(id) {
+        frame.size.width = f64::from(mode.width) / mode.scale;
+        frame.size.height = f64::from(mode.height) / mode.scale;
+        mode.scale
+    } else {
+        physical_backing_scale(id)?
     };
-    ensure!(
-        logical_width > 0 && logical_height > 0,
-        "invalid macOS display mode"
-    );
-    let backing_x = pixel_width as f64 / logical_width as f64;
-    let backing_y = pixel_height as f64 / logical_height as f64;
-    ensure!(
-        (1.0..=4.0).contains(&backing_x) && (backing_x - backing_y).abs() < 0.05,
-        "invalid macOS backing scale"
-    );
-    let width = (frame.size.width * backing_x).round() as u32;
-    let height = (frame.size.height * backing_y).round() as u32;
+    let width = (frame.size.width * backing_scale).round() as u32;
+    let height = (frame.size.height * backing_scale).round() as u32;
     ensure!(
         width > 0 && height > 0 && frame.size.width > 0.0 && frame.size.height > 0.0,
         "invalid macOS display dimensions"
@@ -300,6 +358,35 @@ fn display_geometry(id: u32, frame: CGRect) -> Result<DisplayOutput> {
         y: frame.origin.y.round() as i32,
         scale: sx,
     })
+}
+
+fn physical_backing_scale(id: u32) -> Result<f64> {
+    // ScreenCaptureKit's display dimensions follow the mode's logical size.
+    // Configure capture in backing pixels so Retina content is not first
+    // downsampled to 1x and then enlarged by the viewing browser.
+    let mode = unsafe { CGDisplayCopyDisplayMode(id) };
+    ensure!(!mode.is_null(), "query macOS display backing scale");
+    let (logical_width, logical_height, pixel_width, pixel_height) = unsafe {
+        let dimensions = (
+            CGDisplayModeGetWidth(mode),
+            CGDisplayModeGetHeight(mode),
+            CGDisplayModeGetPixelWidth(mode),
+            CGDisplayModeGetPixelHeight(mode),
+        );
+        CGDisplayModeRelease(mode);
+        dimensions
+    };
+    ensure!(
+        logical_width > 0 && logical_height > 0,
+        "invalid macOS display mode"
+    );
+    let backing_x = pixel_width as f64 / logical_width as f64;
+    let backing_y = pixel_height as f64 / logical_height as f64;
+    ensure!(
+        (1.0..=4.0).contains(&backing_x) && (backing_x - backing_y).abs() < 0.05,
+        "invalid macOS backing scale"
+    );
+    Ok(backing_x)
 }
 
 fn selected_display(output: &DisplayOutput) -> Result<SCDisplay> {

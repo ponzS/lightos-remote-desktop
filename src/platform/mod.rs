@@ -51,6 +51,16 @@ pub trait HostPlatform: Send + Sync {
     fn open_virtual(&self, _config: &Config, _cancelled: Arc<AtomicBool>) -> Result<HostSession> {
         anyhow::bail!("Independent virtual desktop is unavailable on this host")
     }
+    fn virtual_display_availability(&self) -> Option<Result<()>> {
+        None
+    }
+    fn open_virtual_display(
+        &self,
+        _config: &Config,
+        _cancelled: Arc<AtomicBool>,
+    ) -> Result<HostSession> {
+        anyhow::bail!("Virtual display is unavailable on this host")
+    }
     fn open(&self, config: &Config, cancelled: Arc<AtomicBool>) -> Result<HostSession>;
     fn open_physical(
         &self,
@@ -119,6 +129,18 @@ pub trait NativeCapture: Send {
 
 #[cfg(any(target_os = "windows", target_os = "macos"))]
 pub trait NativePlatform: PermissionProvider {
+    #[cfg(target_os = "macos")]
+    fn virtual_display_availability(&self) -> Option<Result<()>> {
+        None
+    }
+    #[cfg(target_os = "macos")]
+    fn open_virtual_display(
+        &self,
+        _config: &Config,
+        _cancelled: Arc<AtomicBool>,
+    ) -> Result<HostSession> {
+        anyhow::bail!("Virtual display is unavailable on this host")
+    }
     fn supports_cursor(&self) -> bool {
         false
     }
@@ -128,9 +150,25 @@ pub trait NativePlatform: PermissionProvider {
     fn probe_input(&self) -> Result<()> {
         native::probe_input()
     }
-    fn move_pointer(&self, enigo: &mut enigo::Enigo, x: i32, y: i32) -> Result<()> {
+    fn move_pointer(
+        &self,
+        enigo: &mut enigo::Enigo,
+        _: &DisplayOutput,
+        x: i32,
+        y: i32,
+    ) -> Result<()> {
         use enigo::Mouse as _;
         enigo.move_mouse(x, y, enigo::Coordinate::Abs)?;
+        Ok(())
+    }
+    fn pointer_button(
+        &self,
+        enigo: &mut enigo::Enigo,
+        button: enigo::Button,
+        direction: enigo::Direction,
+    ) -> Result<()> {
+        use enigo::Mouse as _;
+        enigo.button(button, direction)?;
         Ok(())
     }
     fn kind(&self) -> BackendKind;

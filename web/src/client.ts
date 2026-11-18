@@ -7,7 +7,7 @@ import { encoderBackendKey, encoderBackends, readPreference, savePreference, vid
 import { supportedVideoConfig } from "./video-codec";
 import { createDesktopDecoder, type DesktopDecoder } from "./video-decoder";
 import { createNativeInput } from "./native-input";
-import type { ClientOptions, DesktopChoice, DesktopOutput, Elements, SessionView, ToolbarEdge } from "./types";
+import type { ClientOptions, DesktopChoice, DesktopMode, DesktopOutput, Elements, SessionView, ToolbarEdge } from "./types";
 import { createMobileControls, mobileResolution } from "./mobile";
 import { createCursorLayer } from "./cursor";
 import { createClipboard } from "./clipboard";
@@ -16,6 +16,16 @@ import { decodeDesktopTiles, parseDesktopUpdate } from "./desktop-updates";
 import { isAndroidPlatform } from "./platform";
 import audioWorkerUrl from "./audio-worker.js?url";
 import audioWorkletUrl from "./audio-worklet.js?url";
+
+const desktopLabels: Record<DesktopMode, string> = {
+  virtual: "虚拟桌面",
+  physical: "物理桌面",
+  virtual_display: "虚拟显示器",
+};
+
+function isDesktopMode(value: unknown): value is DesktopMode {
+  return typeof value === "string" && Object.hasOwn(desktopLabels, value);
+}
 
 export const KEY_CODES: Readonly<Record<string, number>> = Object.freeze({
   Escape: 1, Digit1: 2, Digit2: 3, Digit3: 4, Digit4: 5, Digit5: 6,
@@ -166,7 +176,7 @@ export function createClient(options: ClientOptions = {}) {
   let keyboardCaptureWanted = true;
   let keyboardRequest = false;
   let keyboardToken = 0;
-  let desktopMode = "virtual";
+  let desktopMode: DesktopMode = "virtual";
   let desktopConfirmed = false;
   let selectedOutput: string | null = null;
   let desktopChoices: DesktopChoice[] = [];
@@ -212,7 +222,8 @@ export function createClient(options: ClientOptions = {}) {
     images: () => imageClipboard, release, text: pasteText, message, signal: listeners.signal, shift: () => localPasteShift });
 
   function desktopLabel() {
-    return desktopMode === "physical" ? "物理桌面" : "虚拟桌面";
+    return desktopChoices.find((choice) => choice.mode === desktopMode)?.label
+      ?? desktopLabels[desktopMode];
   }
 
   function desktopStatus(text: string) {
@@ -229,10 +240,10 @@ export function createClient(options: ClientOptions = {}) {
   }
 
   function populateDesktops(value: {current?: string; desktops?: DesktopChoice[]; outputs?: DesktopOutput[]; reason?: string}) {
-    if (!desktopConfirmed && (value.current === "physical" || value.current === "virtual")) desktopMode = value.current;
+    if (!desktopConfirmed && isDesktopMode(value.current)) desktopMode = value.current;
     discoveryReason = value.reason ?? "";
     desktopChoices = Array.isArray(value.desktops) ? value.desktops.filter((desktop) =>
-      desktop && ["virtual", "physical"].includes(desktop.mode) && typeof desktop.label === "string") : [];
+      desktop && isDesktopMode(desktop.mode) && typeof desktop.label === "string") : [];
     const select = element("desktop-source");
     select.replaceChildren();
     for (const desktop of desktopChoices) {
@@ -282,7 +293,7 @@ export function createClient(options: ClientOptions = {}) {
     stopAudio();
     if (connectionFailure) wanted = true;
     connectionFailure = "";
-    desktopMode = mode;
+    desktopMode = choice.mode;
     desktopConfirmed = true;
     selectedOutput = mode === "physical" ? output : null;
     switchingDesktop = socket !== null;
@@ -1018,7 +1029,7 @@ export function createClient(options: ClientOptions = {}) {
       if (typeof value.version === "string" && value.version.length <= 64 && /^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.+-]+)?$/.test(value.version)) {
         setText("software-version", `v${value.version}`);
       }
-      desktopMode = value.desktop === "physical" ? "physical" : "virtual";
+      desktopMode = isDesktopMode(value.desktop) ? value.desktop : "virtual";
       desktopConfirmed = true;
       updateCanvasDensity();
       selectedOutput = desktopMode === "physical" && typeof value.output === "string" ? value.output : null;
@@ -1090,6 +1101,7 @@ export function createClient(options: ClientOptions = {}) {
         else cursor.present(cursorEmbedded);
         clipboard.connect(clipboardSession,clipboardSync);
         desktopStatus(`已连接${desktopLabel()}${selectedOutput ? ` · ${selectedOutput}` : ""}。`);
+        if (desktopMode === "virtual_display") scheduleAutoResize();
       }
       updateControls();
     } else if (value.type === "pong" && pendingPing && value.id === pendingPing.id) {
@@ -2024,7 +2036,7 @@ export function createClient(options: ClientOptions = {}) {
       }
       const scaled = resizeScaleAvailable;
       const target = scaled ? (bounds
-        ? mobileResolution(bounds.width, bounds.height - bounds.bar, window.devicePixelRatio || 1)
+        ? mobileResolution(bounds.width, bounds.height - bounds.bar, window.devicePixelRatio || 1, resizeScales)
         : captureResolution(viewport.clientWidth, viewport.clientHeight, window.devicePixelRatio || 1, resizeScales)) : {
         width: Math.max(320, Math.min(3840, Math.floor((bounds?.width ?? viewport.clientWidth) / 2) * 2)),
         height: Math.max(200, Math.min(2160, Math.floor((bounds ? bounds.height - bounds.bar : viewport.clientHeight) / 2) * 2)), scale: 1,

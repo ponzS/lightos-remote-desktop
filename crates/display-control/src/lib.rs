@@ -103,6 +103,9 @@ pub trait DisplayController: Send + Sync {
     fn outputs(&self) -> Result<Vec<DisplayOutput>>;
     /// Read-only probe against this session, never against ambient desktop variables.
     fn capabilities(&self) -> BoxFuture<'_, DisplayCapabilities>;
+    fn resize_scales(&self) -> &[f64] {
+        &DisplayMode::SUPPORTED_SCALES
+    }
     fn resize<'a>(
         &'a self,
         output: Option<&'a str>,

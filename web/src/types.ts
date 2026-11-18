@@ -1,5 +1,7 @@
+export type DesktopMode = "virtual" | "physical" | "virtual_display";
+
 export interface DesktopChoice {
-  mode: string;
+  mode: DesktopMode;
   label: string;
   available: boolean;
   reason?: string;
@@ -22,7 +24,7 @@ export interface ControlState {
   audioAvailable: boolean;
   audioEnabled: boolean;
   resizeAvailable: boolean;
-  desktopMode: string;
+  desktopMode: DesktopMode;
   switchingDesktop: boolean;
   refreshingDesktops: boolean;
   choices: DesktopChoice[];

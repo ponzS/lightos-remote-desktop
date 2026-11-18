@@ -29,7 +29,11 @@ pub(super) fn capture(output: &DisplayOutput) -> Result<Option<CursorFrame>> {
             .unwrap_or(&output.name)
             .parse()
             .context("invalid macOS cursor display")?;
-        let bounds = unsafe { super::CGDisplayBounds(display) };
+        let mut bounds = unsafe { super::CGDisplayBounds(display) };
+        if super::virtual_display::owns(display) {
+            bounds.size.width = f64::from(output.width) / output.scale;
+            bounds.size.height = f64::from(output.height) / output.scale;
+        }
         ensure!(
             bounds.size.width > 0. && bounds.size.height > 0.,
             "invalid cursor display bounds"

@@ -230,7 +230,7 @@ impl PermissionProvider for WindowsPlatform {
 }
 
 impl NativePlatform for WindowsPlatform {
-    fn move_pointer(&self, _: &mut Enigo, x: i32, y: i32) -> Result<()> {
+    fn move_pointer(&self, _: &mut Enigo, _: &DisplayOutput, x: i32, y: i32) -> Result<()> {
         let left = unsafe { GetSystemMetrics(SM_XVIRTUALSCREEN) };
         let top = unsafe { GetSystemMetrics(SM_YVIRTUALSCREEN) };
         let width = unsafe { GetSystemMetrics(SM_CXVIRTUALSCREEN) };
